@@ -3,6 +3,14 @@ import socksio
 from flask import Flask, render_template, request, jsonify
 import markdown
 from openai import OpenAI
+import logging
+import os
+
+# 移除HTTP_PROXY/HTTPS_PROXY环境变量
+os.environ.pop("HTTP_PROXY", None)
+os.environ.pop("HTTPS_PROXY", None)
+
+logging.basicConfig(level=logging.DEBUG)
 
 app = Flask(__name__)
 
@@ -15,7 +23,7 @@ app = Flask(__name__)
 
 
 # 配置 DeepSeek API 密钥和地址 (示例写死，实际请放到安全位置或环境变量)
-client = OpenAI(api_key="", base_url="https://api.deepseek.com")
+client = OpenAI(api_key="sk-d06561b222dc4f4aa0d2a311c968de6a", base_url="https://api.deepseek.com")
 
 @app.route("/", methods=["GET"])
 def index():

@@ -1,3 +1,5 @@
+<!-- templates/index.html -->
+
 <!DOCTYPE html>
 <html lang="zh">
 <head>
@@ -92,10 +94,11 @@
       </div>
     </div>
 
-    <!-- 输入框 -->
+    <!-- 输入框：注意这里增加了 @keydown.enter="onEnter" -->
     <div class="mb-4">
       <label class="block text-sm font-medium mb-2">你的问题</label>
       <textarea v-model="userInput"
+                @keydown.enter="onEnter"
                 class="w-full px-3 py-2 rounded border focus:outline-none focus:ring-2 focus:ring-indigo-400 resize-none"
                 placeholder="想问什么？"
                 rows="3"></textarea>
@@ -176,6 +179,17 @@
         }
       },
       methods: {
+        // 新增的回车处理方法
+        onEnter(e) {
+          // 如果同时按住了 Shift，则正常换行
+          if (e.shiftKey) {
+            return;
+          }
+          // 否则(单独按Enter)，阻止默认换行，调用发送
+          e.preventDefault();
+          this.sendRequest();
+        },
+
         async sendRequest() {
           if (!this.userInput.trim()) {
             this.error = '请输入内容或使用语音输入。';
@@ -279,5 +293,3 @@
 </body>
 {% endraw %}
 </html>
-
-
