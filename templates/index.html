@@ -1,110 +1,213 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
-  <meta charset="UTF-8" />
-  <title>SSE Chat Demo</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <style>
-    body { margin:0; padding:0; display:flex; flex-direction:column; height:100vh;
-           font-family: system-ui, sans-serif; background:#fafafa; }
-    #messages { flex:1 1 auto; overflow-y:auto; padding:16px; }
-    .msg { margin-bottom:8px; line-height:1.5; word-break:break-all; }
-    .user { color:#096dd9; }
-    .ai   { color:#333; }
-    form { display:flex; padding:12px; background:#fff; border-top:1px solid #e5e5e5; }
-    input, button { font-size:16px; }
-    input { flex:1 1 auto; padding:8px; margin-right:8px;
-            border:1px solid #d9d9d9; border-radius:4px; }
-    button { padding:8px 16px; border:none; border-radius:4px;
-             background:#1890ff; color:#fff; cursor:pointer; }
-    button:disabled { background:#a0c6ff; cursor:not-allowed; }
-  </style>
+<meta charset="UTF-8" />
+<title>Dify Chat Pro</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<style>
+  :root { --sidebar: 260px; --gray:#888; }
+  body   { margin:0; font-family:system-ui,sans-serif; display:flex; height:100vh; }
+  #side  { width:var(--sidebar); border-right:1px solid #e5e5e5; overflow-y:auto; }
+  #chat  { flex:1 1 auto; display:flex; flex-direction:column; }
+  #convList li { padding:12px; border-bottom:1px solid #f0f0f0; cursor:pointer; }
+  #convList li.active { background:#f5f7ff; }
+  #msgs  { flex:1 1 auto; overflow-y:auto; padding:16px; background:#fafafa; }
+  .msg   { margin:4px 0; line-height:1.6; word-break:break-all; position:relative; }
+  .user  { color:#096dd9; }
+  .ai    { color:#333; }
+  .ops   { position:absolute; right:-32px; top:0; display:flex; gap:4px; }
+  .ops button{ border:none; background:none; cursor:pointer; color:var(--gray);}
+  form   { display:flex; padding:12px; border-top:1px solid #e5e5e5; }
+  input,button{ font-size:16px; }
+  input  { flex:1; padding:8px; margin-right:8px;
+           border:1px solid #d9d9d9; border-radius:4px; }
+  button { padding:8px 16px; border:none; border-radius:4px;
+           background:#1890ff; color:#fff; cursor:pointer; }
+  #stopBtn{ margin-left:8px; background:#ff7875; }
+</style>
 </head>
 <body>
-  <div id="messages"></div>
+  <!-- 左侧：会话列表 -->
+  <aside id="side">
+    <h3 style="padding:12px 16px;margin:0;">会话</h3>
+    <ul id="convList" style="list-style:none;margin:0;padding:0;"></ul>
+  </aside>
 
-  <form id="chatForm">
-    <input id="queryInput" placeholder="输入消息后回车" autocomplete="off" />
-    <button type="submit">发送</button>
-  </form>
+  <!-- 右侧：聊天 -->
+  <section id="chat">
+    <div id="msgs"></div>
+    <form id="chatForm">
+      <input id="inputBox" placeholder="输入消息回车发送" autocomplete="off" />
+      <button type="submit">发送</button>
+      <button type="button" id="stopBtn" style="display:none;">停止</button>
+    </form>
+  </section>
 
-  <script>
-    const backendBase = "";  // 留空即同源；跨域时写绝对 URL 如 "http://127.0.0.1:5000"
-    const messagesEl  = document.getElementById("messages");
-    const form        = document.getElementById("chatForm");
-    const input       = document.getElementById("queryInput");
-    let controller;   // AbortController，用于取消上一次请求
+<script>
+const userId     = "{{ user_id }}";              // 从后端模板注入
+const apiBase    = "";                           // 同源
+let convId       = "";                           // 当前会话
+let abortCtrl    = null;                         // 控制停止
+let currentTask  = null;                         // task_id for /stop
 
-    form.addEventListener("submit", async (e) => {
-      e.preventDefault();
-      const text = input.value.trim();
-      if (!text) return;
+// ---------- DOM 工具 ----------
+const qs  = s => document.querySelector(s);
+const qsa = s => [...document.querySelectorAll(s)];
+function addMsg(role, text, messageId, isHistory=false){
+  const div = document.createElement("div");
+  div.className = `msg ${role}`;
+  div.dataset.id = messageId || "";
+  div.textContent = (role==="user"?"🧑‍💻 ":"🤖 ") + text;
 
-      addMsg("user", text);
-      input.value = "";
-      await sendQuery(text);
-    });
+  // 操作区
+  const ops = document.createElement("div");
+  ops.className="ops";
+  if(role==="ai"){
+    ops.innerHTML = `
+      <button class="like" title="点赞">👍</button>
+      <button class="dislike" title="点踩">👎</button>`;
+  }else{
+    ops.innerHTML = `<button class="resend" title="重新发送">↻</button>`;
+  }
+  ops.addEventListener("click", e=>{
+    const btn = e.target.closest("button");
+    if(!btn) return;
+    const mid = div.dataset.id;
+    if(btn.className==="like") return sendFeedback(mid, "like", btn);
+    if(btn.className==="dislike") return sendFeedback(mid, "dislike", btn);
+    if(btn.className==="resend") return resend(div.textContent.slice(3)); // 去掉头像
+  });
+  div.appendChild(ops);
+  qs("#msgs").appendChild(div);
+  if(!isHistory) qs("#msgs").scrollTop = qs("#msgs").scrollHeight;
+}
 
-    function addMsg(role, text) {
-      const div = document.createElement("div");
-      div.className = `msg ${role}`;
-      div.textContent = (role === "user" ? "🧑‍💻 " : "🤖 ") + text;
-      messagesEl.appendChild(div);
-      messagesEl.scrollTop = messagesEl.scrollHeight;
-    }
+// ---------- 会话列表 ----------
+async function loadConversations(){
+  const res = await fetch(`/api/conversations?user=${userId}`);
+  const data = await res.json();
+  const ul = qs("#convList");
+  ul.innerHTML = "";
+  data.data.forEach(c=>{
+    const li = document.createElement("li");
+    li.textContent = c.name || "新对话";
+    li.dataset.id = c.id;
+    li.onclick = ()=>selectConversation(c.id);
+    ul.appendChild(li);
+  });
+  // 若没有会话，创建一个空字符串 convId，接口会自动新建
+  if(data.data.length) selectConversation(data.data[0].id);
+}
 
-async function sendQuery(query) {
-  controller?.abort?.();
-  controller = new AbortController();
+async function selectConversation(id){
+  convId = id;
+  qsa("#convList li").forEach(li=>li.classList.toggle("active", li.dataset.id===id));
+  qs("#msgs").innerHTML = "";
+  const res = await fetch(`/api/messages?conversation_id=${id}&user=${userId}&limit=50`);
+  const j   = await res.json();
+  // 逆序插入（接口倒序返回）
+  j.data.reverse().forEach(m=>{
+    if(m.query)  addMsg("user", m.query, m.id, true);
+    if(m.answer) addMsg("ai",   m.answer, m.id, true);
+  });
+  qs("#msgs").scrollTop = qs("#msgs").scrollHeight;
+}
 
-  // 新增：当前回答节点缓存
+// ---------- 发送、流式接收 ----------
+qs("#chatForm").addEventListener("submit", e=>{
+  e.preventDefault();
+  const txt = qs("#inputBox").value.trim();
+  if(!txt) return;
+  qs("#inputBox").value="";
+  addMsg("user", txt, "");
+  stream(txt);
+});
+
+function showStop(show){ qs("#stopBtn").style.display = show ? "" : "none"; }
+qs("#stopBtn").onclick = ()=> stopGenerate();
+
+async function stream(text){
+  showStop(true);
+  abortCtrl = new AbortController();
+  currentTask = null;
   let currentAIMsg = null;
 
-  try {
-    const res = await fetch(`${backendBase}/chat_stream`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ query }),
-      signal: controller.signal
+  try{
+    const res = await fetch("/api/chat_stream",{
+      method:"POST",
+      headers:{ "Content-Type":"application/json" },
+      body: JSON.stringify({ query:text, conversation_id:convId, user:userId }),
+      signal: abortCtrl.signal
     });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-
-    const reader  = res.body.getReader();
+    const rd = res.body.getReader();
     const decoder = new TextDecoder("utf-8");
-    let buffer    = "";
+    let buf = "";
 
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) break;
-
-      buffer += decoder.decode(value, { stream: true });
-      let sep;
-      while ((sep = buffer.indexOf("\n\n")) !== -1) {
-        const chunk = buffer.slice(0, sep).trim();
-        buffer = buffer.slice(sep + 2);
-
-        if (chunk.startsWith("data:")) {
-          const payload = chunk.slice(5).trim();
-          if (!payload) continue;
-
-          // -------- 核心改动开始 --------
-          if (!currentAIMsg) {
-            currentAIMsg = document.createElement("div");
-            currentAIMsg.className = "msg ai";
-            currentAIMsg.textContent = "🤖 ";
-            messagesEl.appendChild(currentAIMsg);
-          }
-          currentAIMsg.textContent += payload;   // 追加 token
-          messagesEl.scrollTop = messagesEl.scrollHeight;
-          // -------- 核心改动结束 --------
+    while(true){
+      const {value,done} = await rd.read();
+      if(done) break;
+      buf += decoder.decode(value, {stream:true});
+      let idx;
+      while((idx = buf.indexOf("\n\n"))!==-1){
+        const chunk = buf.slice(0, idx).trim();
+        buf = buf.slice(idx+2);
+        if(!chunk.startsWith("data:")) continue;
+        const evt = JSON.parse(chunk.slice(5));
+        switch(evt.event){
+          case "message":
+            if(!currentAIMsg){
+              currentAIMsg = document.createElement("div");
+              currentAIMsg.className="msg ai";
+              currentAIMsg.textContent="🤖 ";
+              qs("#msgs").appendChild(currentAIMsg);
+            }
+            currentAIMsg.textContent += evt.answer;
+            qs("#msgs").scrollTop = qs("#msgs").scrollHeight;
+            break;
+          case "message_end":
+            currentAIMsg.dataset.id = evt.message_id;
+            currentAIMsg = null;
+            break;
+          case "local_stream_closed":
+            currentTask = evt.task_id;
+            break;
         }
       }
     }
-  } catch (err) {
-    if (err.name !== "AbortError") addMsg("ai", "⚠️ 网络异常：" + err.message);
+  }catch(err){
+    if(err.name!=="AbortError") alert("网络错误："+err.message);
+  }finally{
+    showStop(false);
   }
 }
 
-  </script>
+async function stopGenerate(){
+  if(abortCtrl) abortCtrl.abort();
+  showStop(false);
+  if(currentTask){
+    await fetch("/api/stop",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({task_id:currentTask,user:userId})});
+  }
+}
+
+// ---------- 点赞 / 点踩 ----------
+async function sendFeedback(mid, rating, btn){
+  await fetch(`/api/feedback/${mid}`,{
+    method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({rating,user:userId})
+  });
+  // 简单标记颜色
+  btn.style.color = rating==="like"?"green":"red";
+}
+
+// ---------- 重发 ----------
+function resend(text){
+  stream(text);
+}
+
+// ---------- 初始化 ----------
+loadConversations();
+</script>
 </body>
 </html>
