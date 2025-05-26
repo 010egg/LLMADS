@@ -1,0 +1,394 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>DeepSeek 聊天应用</title>
+  <!-- 引入TailwindCSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    body {
+      background: url("https://img-musesai.163264.com/pic/202501/xutPRQnS8JOY.jpg")
+                  no-repeat center center fixed;
+      background-size: cover;
+      font-family: 'Microsoft YaHei', Arial, sans-serif;
+    }
+    .page-overlay {
+      background-color: rgba(255,255,255,0.85);
+      backdrop-filter: blur(4px);
+    }
+    .content-area pre code {
+      background-color: #2d2d2d;
+      color: #f8f8f2;
+      padding: 0.5rem;
+      border-radius: 0.25rem;
+      display: block;
+      white-space: pre-wrap;
+      margin: 0.5em 0;
+      overflow-x: auto;
+    }
+    .typing-cursor::after {
+      content: '|';
+      margin-left: 4px;
+      animation: blink 1s infinite;
+    }
+    @keyframes blink {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0; }
+    }
+  </style>
+</head>
+{% raw %}
+<body class="min-h-screen flex">
+  <!-- 左侧：会话列表 -->
+  <div class="w-1/4 bg-white bg-opacity-80 p-4 overflow-y-auto" style="max-height: 100vh;">
+    <button @click="createConversation"
+            class="w-full bg-indigo-600 text-white py-2 px-4 rounded mb-3">
+      + 新会话
+    </button>
+    <ul class="space-y-1">
+      <li v-for="conv in conversations" :key="conv.id" class="flex items-center justify-between p-2 rounded cursor-pointer"
+          :class="conv.id === currentConvId ? 'bg-indigo-100 font-semibold' : 'hover:bg-gray-100'"
+          @click="switchConversation(conv.id)">
+        <span v-if="!conv.editing" @dblclick.stop="conv.editing = true">{{ conv.name }}</span>
+        <input v-else type="text" v-model="conv.name" @blur="renameConversation(conv)" @keyup.enter="renameConversation(conv)" class="border px-1"/>
+        <button @click.stop="deleteConversation(conv.id)" class="text-red-500 text-sm ml-2">删除</button>
+      </li>
+    </ul>
+  </div>
+
+  <!-- 右侧：聊天区域 -->
+  <div id="app" class="flex-1 page-overlay max-w-full mx-4 p-6">
+    <div class="flex items-center justify-between mb-4">
+      <div class="flex items-center space-x-3">
+        <img src="https://images.unsplash.com/photo-1614583225154-5fcdda07019e?fm=jpg&q=60&w=200"
+             alt="Avatar"
+             class="w-14 h-14 object-cover rounded-full shadow-lg border-2 border-indigo-300">
+        <div>
+          <h1 class="text-2xl font-bold text-indigo-700">智脑</h1>
+          <p class="text-xs text-gray-500 font-light">新生、创意、探索</p>
+        </div>
+      </div>
+      <div class="text-sm text-gray-700">
+        状态:
+        <span :class="statusClass" class="text-xl">●</span>
+      </div>
+    </div>
+
+    <!-- 聊天记录显示区域 -->
+    <div class="content-area min-h-[300px] p-3 bg-gray-50 rounded-lg mb-4 overflow-y-auto" style="max-height: 60vh;">
+      <div v-if="error" class="text-red-600 font-semibold">
+        ❌ 错误: {{ error }}
+      </div>
+      <div v-for="(msg, index) in messages" :key="index" class="mb-2">
+        <div v-if="msg.role === 'user'" class="text-right text-gray-800">
+          <strong>你：</strong>{{ msg.content }}
+        </div>
+        <!-- 调用 parseMarkdown 方法来解析 Markdown -->
+        <div v-else class="text-indigo-700" v-html="msg.html ? msg.html : parseMarkdown(msg.content)"></div>
+      </div>
+    </div>
+
+    <!-- 公用输入区域（既作为聊天内容也作为 PDF 文件夹路径输入） -->
+    <div class="mb-4">
+      <label class="block text-sm font-medium mb-2">请输入内容（聊天或PDF文件夹路径）</label>
+      <textarea v-model="userInput"
+                @keydown.enter="onEnter"
+                class="w-full px-3 py-2 rounded border focus:outline-none focus:ring-2 focus:ring-indigo-400 resize-none"
+                placeholder="请输入聊天内容或PDF文件夹路径"
+                rows="3"></textarea>
+    </div>
+
+    <!-- 按钮组（发送、语音、解析） -->
+    <div class="flex items-center space-x-2 mb-4">
+      <button @click="sendRequest"
+              class="bg-gradient-to-r from-pink-500 to-indigo-500 hover:from-pink-600 hover:to-indigo-600 text-white px-4 py-2 rounded shadow transform transition duration-300 hover:scale-105">
+        {{ isLoading ? '请求中...' : '发送请求' }}
+      </button>
+      <button @click="toggleRecording"
+              class="bg-gray-200 hover:bg-gray-300 text-gray-800 px-3 py-2 rounded shadow transform transition duration-300 hover:scale-105">
+        {{ isRecording ? '停止录音' : '🎤 语音输入' }}
+      </button>
+      <button @click="processPdfs"
+              class="bg-blue-500 text-white px-4 py-2 rounded shadow transform transition duration-300 hover:scale-105">
+        解析PDF
+      </button>
+    </div>
+
+    <!-- PDF解析结果展示（如果有返回） -->
+    <div v-if="pdfResult" class="mt-4 p-4 bg-white rounded shadow">
+      <h3 class="text-lg font-bold mb-2">PDF 解析结果</h3>
+      <pre class="bg-gray-200 p-2 rounded">{{ pdfResult }}</pre>
+    </div>
+
+    <!-- 使用指南 -->
+    <details class="text-sm cursor-pointer border-t pt-2 mt-4">
+      <summary class="text-indigo-600 underline mb-2">使用指南（点击展开）</summary>
+      <div class="mt-2 space-y-2">
+        <p>1. 在上方输入框输入聊天内容，或输入PDF文件夹路径。</p>
+        <p>2. 点击“发送请求”提交聊天内容；点击“解析PDF”将输入内容作为文件夹路径解析PDF文件。</p>
+        <p>3. 聊天回复支持 Markdown 格式（标题、加粗、代码块等）。</p>
+        <p>4. 语音输入按钮用于语音识别，将转换结果填入输入框。</p>
+        <p>5. 如遇错误，请查看浏览器控制台及后端日志。</p>
+      </div>
+    </details>
+  </div>
+
+  <!-- 加载 Vue.js 与 Marked.js -->
+  <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <script>
+    const { createApp } = Vue;
+    createApp({
+      data() {
+        return {
+          userInput: '',
+          error: '',
+          isLoading: false,
+          isRecording: false,
+          status: 'idle',
+          conversations: [],
+          currentConvId: null,
+          messages: [],
+          pdfResult: ''
+        };
+      },
+      computed: {
+        statusClass() {
+          return {
+            'text-green-500': this.status === 'success',
+            'text-red-500': this.status === 'error',
+            'text-yellow-500 animate-ping': this.status === 'loading',
+            'text-gray-400': this.status === 'idle'
+          };
+        }
+      },
+      created() {
+        this.fetchConversations();
+        this.initResizeObserver();
+      },
+      methods: {
+        parseMarkdown(text) {
+          return globalThis.marked ? globalThis.marked.parse(text) : text;
+        },
+        scrollToBottom() {
+          this.$nextTick(() => {
+            const chatArea = document.querySelector('.content-area');
+            if (chatArea) {
+              chatArea.scrollTop = chatArea.scrollHeight;
+            }
+          });
+        },
+        initResizeObserver() {
+          if (typeof ResizeObserver !== 'undefined') {
+            const observer = new ResizeObserver(entries => {
+              console.log("聊天区域尺寸变化：", entries);
+            });
+            const chatArea = document.querySelector('.content-area');
+            if (chatArea) {
+              observer.observe(chatArea);
+            }
+          } else {
+            console.warn("当前浏览器不支持 ResizeObserver");
+          }
+        },
+        async fetchConversations() {
+          try {
+            const resp = await fetch('/api/conversations');
+            const data = await resp.json();
+            this.conversations = data;
+            if (this.conversations.length > 0) {
+              this.currentConvId = this.conversations[0].id;
+              this.switchConversation(this.currentConvId);
+            }
+          } catch (e) {
+            console.error("获取会话失败", e);
+            this.error = "获取会话失败";
+          }
+        },
+        async createConversation() {
+          try {
+            const resp = await fetch('/api/conversations', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({})
+            });
+            const newConv = await resp.json();
+            this.conversations.unshift(newConv);
+            this.currentConvId = newConv.id;
+            this.messages = [];
+          } catch (e) {
+            console.error("创建会话失败", e);
+            this.error = "创建会话失败";
+          }
+        },
+        async switchConversation(convId) {
+          this.error = '';
+          try {
+            const resp = await fetch(`/api/conversations/${convId}`);
+            const convData = await resp.json();
+            this.messages = convData.messages || [];
+            this.messages = this.messages.map(msg => {
+              try {
+                msg.html = globalThis.marked ? globalThis.marked.parse(msg.content) : msg.content;
+              } catch (e) {
+                console.error('Markdown解析失败:', e);
+                msg.html = msg.content;
+              }
+              return msg;
+            });
+            this.$nextTick(() => {
+              const chatArea = document.querySelector('.content-area');
+              chatArea.scrollTop = chatArea.scrollHeight;
+            });
+          } catch (e) {
+            console.error("加载会话失败", e);
+            this.error = "加载会话失败";
+          }
+        },
+        async renameConversation(conv) {
+          conv.editing = false;
+          const newName = conv.name.trim() || "未命名";
+          conv.name = newName;
+          try {
+            await fetch(`/api/conversations/${conv.id}`, {
+              method: 'PUT',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ name: newName })
+            });
+          } catch (e) {
+            console.error("重命名失败", e);
+          }
+        },
+        async deleteConversation(convId) {
+          if (!confirm("确定删除该会话吗？此操作不可恢复。")) return;
+          try {
+            await fetch(`/api/conversations/${convId}`, { method: 'DELETE' });
+            this.conversations = this.conversations.filter(c => c.id !== convId);
+            if (this.currentConvId === convId) {
+              this.messages = [];
+              this.currentConvId = this.conversations.length ? this.conversations[0].id : null;
+              if (this.currentConvId) this.switchConversation(this.currentConvId);
+            }
+          } catch (e) {
+            console.error("删除失败", e);
+            alert("删除失败");
+          }
+        },
+        onEnter(e) {
+          if (e.shiftKey) return;
+          e.preventDefault();
+          this.sendRequest();
+        },
+        async sendRequest() {
+          if (!this.userInput.trim()) {
+            this.error = '请输入内容或使用语音输入。';
+            return;
+          }
+          const userText = this.userInput.trim();
+          this.userInput = '';
+          this.isLoading = true;
+          this.error = '';
+          this.status = 'loading';
+
+          // 将用户消息添加到当前消息列表中
+          this.messages.push({ role: 'user', content: userText });
+          try {
+            const resp = await fetch('/api/chat', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                user_input: userText,
+                conversation_id: this.currentConvId
+              })
+            });
+            if (!resp.ok) {
+              const errorText = await resp.text();
+              throw new Error(`后端错误: ${errorText}`);
+            }
+            const data = await resp.json();
+            if (data.error) throw new Error(data.error);
+            const assistantText = data.raw || '';
+            const assistMsg = {
+              role: 'assistant',
+              content: assistantText,
+              html: this.parseMarkdown(assistantText)
+            };
+            this.messages.push(assistMsg);
+            this.status = 'success';
+            this.scrollToBottom();
+          } catch (e) {
+            this.error = e.message;
+            this.status = 'error';
+            console.error(e);
+          } finally {
+            this.isLoading = false;
+          }
+        },
+        toggleRecording() {
+          if (!('SpeechRecognition' in window) && !('webkitSpeechRecognition' in window)) {
+            this.error = '此浏览器不支持语音输入，请更换Chrome并使用HTTPS。';
+            this.status = 'error';
+            return;
+          }
+          if (this.isRecording) {
+            this.recognition.stop();
+            return;
+          }
+          const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+          this.recognition = new SpeechRecognition();
+          this.recognition.lang = 'zh-CN';
+          this.recognition.interimResults = false;
+          this.recognition.onresult = (event) => {
+            if (event.results.length > 0) {
+              this.userInput = event.results[0][0].transcript;
+            }
+          };
+          this.recognition.onerror = (event) => {
+            console.error('语音识别错误:', event);
+            this.error = '语音识别出错，请重试。';
+            this.status = 'error';
+          };
+          this.recognition.onend = () => {
+            this.isRecording = false;
+          };
+          this.isRecording = true;
+          this.recognition.start();
+        },
+        async processPdfs() {
+          // 此处将当前输入框内容作为 PDF 文件夹路径
+          if (!this.userInput.trim()) {
+            alert("请输入 PDF 文件夹路径");
+            return;
+          }
+          const payload = {
+            pdf_path: this.userInput.trim(),
+            conversation_id: this.currentConvId ? this.currentConvId.toString() : null
+          };
+          try {
+            const resp = await fetch("/api/process_pdfs", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(payload)
+            });
+            const data = await resp.json();
+            if (data.error) {
+              this.pdfResult = "错误：" + data.error;
+            } else {
+              this.pdfResult = JSON.stringify(data, null, 2);
+              if (data.conversation_id) {
+                this.currentConvId = data.conversation_id;
+                this.switchConversation(this.currentConvId);
+              }
+            }
+          } catch (err) {
+            console.error(err);
+            this.pdfResult = "请求失败：" + err;
+          }
+        }
+      }
+    }).mount('body');
+  </script>
+</body>
+{% endraw %}
+</html>
